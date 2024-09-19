@@ -1,0 +1,90 @@
+name: DEPLOY INFRA & SERVICES
+
+on:
+  workflow_dispatch:
+    inputs:
+      github-env:
+        description: 'Github environment'
+        type: environment
+        default: PRELIVE
+        required: true
+      azure-env:
+        description: 'Azure environment'
+        required: true
+      cert-file:
+        description: 'Name of certificate file'
+        required: false
+      cert-pswd:
+        description: 'Certificate password'
+        required: false
+      openailocation:
+        description: 'OpenAI location'
+        required: true
+        default: 'francecentral'
+        type: choice
+        options:
+        - francecentral
+        - swedencentral
+        - westeurope
+        - switzerlandnorth
+        - eastus
+
+permissions:
+  id-token: write
+  contents: read
+      
+jobs: 
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github-env }}
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      LOCATION: westeurope
+
+    
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Azure login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        enable-AzPSSession: true
+
+
+
+    - name: install azd
+      run: curl -fsSL https://aka.ms/install-azd.sh | bash
+
+    - name: azd login (Federated Credentials)
+      run: azd auth login --client-id $AZURE_CLIENT_ID --federated-credential-provider "github" --tenant-id $AZURE_TENANT_ID
+
+    - name: azd init
+      run: azd init --no-prompt --environment ${{ inputs.azure-env }} --location $LOCATION --subscription $AZURE_SUBSCRIPTION_ID
+
+    - name: Get runner public ip
+      id: runner_pip
+      run: echo "pip=$(curl -s https://ifconfig.me)" >> "$GITHUB_OUTPUT"
+
+    - name: Set app authentication
+      run: |
+        azd env set AZURE_SPO_CLIENT_ID ${{ secrets.AZURE_APP_FUNCTIONS_CLIENT_ID }}
+        azd env set AZURE_SPO_CLIENT_SECRET ${{ secrets.AZURE_APP_FUNCTIONS_CLIENT_SECRET }}
+        azd env set AZURE_SPO_TENANT_ID ${{ secrets.AZURE_APP_FUNCTIONS_TENANT_ID }}
+        azd env set AZURE_SERVER_APP_ID ${{ secrets.AZURE_APP_BACKEND_CLIENT_ID }}
+        azd env set AZURE_SERVER_APP_SECRET ${{ secrets.AZURE_APP_BACKEND_CLIENT_SECRET }}
+        azd env set AZURE_CLIENT_APP_ID ${{ secrets.AZURE_APP_FRONTEND_CLIENT_ID }}
+        azd env set AZURE_CLIENT_APP_SECRET ${{ secrets.AZURE_APP_FRONTEND_CLIENT_SECRET }}
+        azd env set AZURE_TENANT_ID ${{ secrets.AZURE_TENANT_ID }}
+        azd env set AZURE_AUTH_TENANT_ID ${{ secrets.AZURE_APPS_TENANT_ID }}
+        azd env set AZURE_OPENAI_RESOURCE_GROUP_LOCATION ${{ inputs.openailocation }}
+        azd env set AZURE_AGENT_PUBLIC_IP_ADDRESS ${{ steps.runner_pip.outputs.pip }}
+        ${{ inputs.github-env == 'EHD' }} && custom_host_name='llm.cloud.audi' || custom_host_name='dev-llm.cloud.audi'
+        azd env set AZURE_CUSTOM_HOST_NAME $custom_host_name
+    - name: azd up
+      run: azd up
